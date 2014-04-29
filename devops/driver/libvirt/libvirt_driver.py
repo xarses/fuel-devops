@@ -36,7 +36,6 @@ class DevopsDriver(object):
         self.xml_builder = LibvirtXMLBuilder(self)
         self.capabilities = None
         self.allocated_networks = None
-        self.storage_pool_name = storage_pool_name
 
         if settings.VNC_PASSWORD:
             self.vnc_password = settings.VNC_PASSWORD
@@ -54,6 +53,47 @@ class DevopsDriver(object):
         if self.capabilities is None:
             self.capabilities = self.conn.getCapabilities()
         return ET.fromstring(self.capabilities)
+
+    @retry()
+    def get_storage_pools(self):
+        """
+            :rtype : List
+        """
+        return [ self.parse_storage_pool(pool)
+                for pool in self.conn.listAllStoragePools()]
+
+    def parse_storage_pool(self, pool):
+        """
+        type libvirt: virStoragePool
+            :rtype : Dict
+        """
+        x_pool = ET.fromstring(pool.XMLDesc())
+        data = {
+            'uuid': x_pool.findtext("./uuid"),
+            'type': x_pool.get('type'),
+            'name': x_pool.findtext("./name"),
+            'source': x_pool.findtext('./target/path'),
+            'host': None,
+            'auth_username': None,
+            'secret_uuid': None
+        }
+
+        if data['source'] == None:
+            data['source'] = x_pool.findtext('./source/name')
+            data['host'] = [{'name': el.get('name'),
+                             'port': el.get('port')}
+                                for el in x_pool.findall('./source/host')]
+            data['auth_username'] = x_pool.find('./source/auth').get("username")
+            data['secret_uuid'] = x_pool.find('./source/auth/secret').get('uuid')
+
+        return data
+
+    @retry()
+    def pool_define(self, pool):
+        ret = self.conn.StoragePoolCreateXML(
+            self.xml_builder.build_pool_xml(pool))
+        ret.setAutostart(True)
+        pool.uuid = ret.UUIDString()
 
     @retry()
     def network_bridge_name(self, network):
@@ -129,21 +169,6 @@ class DevopsDriver(object):
             return True
         except libvirt.libvirtError, e:
             if e.get_error_code() == libvirt.VIR_ERR_NO_DOMAIN_SNAPSHOT:
-                return False
-            else:
-                raise
-
-    @retry()
-    def volume_exists(self, volume):
-        """
-        :type volume: Volume
-            :rtype : Boolean
-        """
-        try:
-            self.conn.storageVolLookupByKey(volume.uuid)
-            return True
-        except libvirt.libvirtError, e:
-            if e.get_error_code() == libvirt.VIR_ERR_NO_STORAGE_VOL:
                 return False
             else:
                 raise
@@ -383,14 +408,29 @@ class DevopsDriver(object):
                                                             len(key_code), 0)
 
     @retry()
-    def volume_define(self, volume, pool=None):
+    def volume_exists(self, volume):
+        """
+        :type volume: Volume
+            :rtype : Boolean
+        """
+        try:
+            self.conn.storageVolLookupByKey(volume.uuid)
+            return True
+        except libvirt.libvirtError, e:
+            if e.get_error_code() == libvirt.VIR_ERR_NO_STORAGE_VOL:
+                return False
+            else:
+                raise
+
+    @retry()
+    def volume_define(self, volume):
         """
         :type volume: Volume
         :type pool: String
             :rtype : None
         """
-        if pool is None:
-            pool = self.storage_pool_name
+
+        pool = volume.environment.storage_pool.name
         libvirt_volume = self.conn.storagePoolLookupByName(pool).createXML(
             self.xml_builder.build_volume_xml(volume), 0)
         volume.uuid = libvirt_volume.key()

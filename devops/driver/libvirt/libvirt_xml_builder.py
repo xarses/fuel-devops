@@ -23,6 +23,34 @@ class LibvirtXMLBuilder(object):
         super(LibvirtXMLBuilder, self).__init__()
         self.driver = driver
 
+    def _pool_hosts(self, xml, pool):
+        for host in pool.hosts.all():
+            xml.host(name=host.name, port=host.port)
+
+    def _pool_auth(self, xml, pool):
+        with xml.auth(
+                username=pool.auth_username or "",
+                type=pool.auth_type):
+            xml.secret(uuid=pool.secret_uuid, type=pool.auth_type)
+
+    def build_pool_xml(self, pool):
+        """
+        :type pool: Pool
+            :rtypt : String
+        """
+        pool_xml = XMLBuilder('pool', type=pool.type)
+        pool_xml.name(pool.name)
+        if pool.type == 'rbd':
+            with pool_xml.sources:
+                with pool_xml.name(pool.source):
+                    self._pool_hosts(pool_xml, pool)
+                    self._pool_auth(pool_xml, pool)
+        else:
+            with pool_xml.target:
+                pool_xml.path(pool.source)
+
+        return str(pool_xml)
+
     def build_network_xml(self, network):
         """
         :type network: Network
@@ -66,8 +94,13 @@ class LibvirtXMLBuilder(object):
         volume_xml = XMLBuilder('volume')
         volume_xml.name(volume.full_name)
         volume_xml.capacity(str(volume.capacity))
+        if volume.type == 'network':
+            with volume_xml.source:
+                self._pool_hosts(volume_xml, volume.pool)
+            self._pool_auth(volume_xml, volume.pool)
         with volume_xml.target:
-            volume_xml.format(type=volume.format)
+            if volume.type == 'file':
+                volume_xml.format(type=volume.format)
         if volume.backing_store is not None:
             with volume_xml.backingStore:
                 volume_xml.path(self.driver.volume_path(volume.backing_store))
@@ -90,8 +123,17 @@ class LibvirtXMLBuilder(object):
     def _build_disk_device(self, device_xml, disk_device):
         with device_xml.disk(type=disk_device.type, device=disk_device.device):
             #https://bugs.launchpad.net/ubuntu/+source/qemu-kvm/+bug/741887
-            device_xml.driver(type=disk_device.volume.format, cache="unsafe")
-            device_xml.source(file=self.driver.volume_path(disk_device.volume))
+
+            if disk_device.type == 'network':
+                name = disk_device.volume.get_path()
+                with device_xml.source(protocol=disk_device.pool.type,
+                        name=name):
+                    self._pool_hosts(device_xml, disk_device.pool)
+                self._pool_auth(device_xml, disk_device.pool)
+            else:
+                device_xml.driver(type=disk_device.volume.format, cache="unsafe")
+                device_xml.source(file=self.driver.volume_path(disk_device.volume))
+
             device_xml.target(dev=disk_device.target_dev, bus=disk_device.bus)
 
     def _build_interface_device(self, device_xml, interface):

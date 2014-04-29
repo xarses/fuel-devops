@@ -23,19 +23,22 @@ from django.db import IntegrityError, transaction
 from devops.helpers.helpers import generate_mac
 from devops.helpers.network import IpNetworksPool
 from devops.models import Address, Interface, Node, Network, Environment, \
-    Volume, DiskDevice, ExternalModel
+    Volume, DiskDevice, ExternalModel, Pool
 
+from devops.settings import DRIVER_PARAMETERS
 
 class Manager(object):
     def __init__(self):
         super(Manager, self).__init__()
         self.default_pool = None
+        self.storage_pool = DRIVER_PARAMETERS['storage_pool_name']
 
-    def environment_create(self, name):
+    def environment_create(self, name, storage_pool=None):
         """
         :rtype : Environment
         """
-        return Environment.objects.create(name=name)
+        pool = Pool.objects.get(name=storage_pool or self.storage_pool)
+        return Environment.objects.create(name=name, storage_pool=pool)
 
     def environment_list(self):
         return Environment.objects.all()
@@ -192,15 +195,16 @@ class Manager(object):
         return Address.objects.create(ip_address=ip_address,
                                       interface=interface)
 
-    def node_attach_volume(self, node, volume, device='disk', type='file',
+    def node_attach_volume(self, node, volume, device='disk',
                            bus='virtio', target_dev=None):
         """
         :rtype : DiskDevice
         """
         return DiskDevice.objects.create(
-            device=device, type=type, bus=bus,
+            device=device, type=volume.type, bus=bus,
             target_dev=target_dev or node.next_disk_name(),
             volume=volume, node=node)
 
     def synchronize_environments(self):
-        Environment().synchronize_all()
+        Pool.sync()
+        Environment.synchronize_all()

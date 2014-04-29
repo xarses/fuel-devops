@@ -30,7 +30,6 @@ def choices(*args, **kwargs):
     defaults.update(choices=double_tuple(*args))
     return models.CharField(**defaults)
 
-
 def double_tuple(*args):
     dict = []
     for arg in args:
@@ -64,6 +63,7 @@ class DriverModel(models.Model):
 
 class Environment(DriverModel):
     name = models.CharField(max_length=255, unique=True, null=False)
+    storage_pool = models.ForeignKey("Pool", null=True)
 
     @property
     def volumes(self):
@@ -168,6 +168,81 @@ class Environment(DriverModel):
 
         logger.info('Undefined domains: %s, removed nodes: %s',
                     (0, len(nodes_removed)))
+
+
+class PoolHost(models.Model):
+    name = models.CharField(max_length=255, null=False)
+    port = models.CharField(max_length=255, null=False)
+
+class Pool(DriverModel):
+    name = models.CharField(max_length=255, null=False)
+    uuid = models.CharField(max_length=255)
+    type = choices('rbd', 'dir')
+    source = models.CharField(max_length=255, null=False)
+    hosts = models.ManyToManyField(PoolHost, null=True)
+    auth_username = models.CharField(max_length=255, null=True)
+    secret_uuid = models.CharField(max_length=40, null=True)
+
+    @property
+    def auth_type(self):
+        if self.type == 'rbd':
+            return 'ceph'
+        else:
+            return None
+
+    @property
+    def volume_type(self):
+        if self.type == 'rbd':
+            return 'network'
+        else:
+            return 'file'
+
+    def define(self):
+        self.driver.pool_define(self)
+        self.save()
+
+    @classmethod
+    def _create_or_update(cls, data):
+        hosts = data.pop('host')
+        pool, created = Pool.objects.get_or_create(**data)
+
+        if not created:
+            Pool.objects.filter(id=pool.id).update(**data)
+
+        if hosts is not None:
+            h_list = []
+            for item in hosts:
+                host, created = PoolHost.objects.get_or_create(**item)
+                host.save()
+                h_list.append(host)
+            pool.hosts = h_list
+        pool.save()
+        return pool
+
+    @classmethod
+    def sync(cls):
+        storage_pools = cls.get_driver().get_storage_pools()
+        pools = Pool.objects.all()
+
+        s_names = [item['name'] for item in storage_pools]
+        # Pools to sync
+        for pool in pools:
+            if pool.name not in s_names:
+                # Pool is no longer a driver storage pool erase it.
+                print "DEBUG: deleting pool %s" % (pool.name)
+                pool.delete()
+
+        p_names = [item.name for item in pools]
+        for s_pool in storage_pools:
+            if s_pool['name'] not in p_names:
+                # driver storage pool exists, create db.
+                print "DEBUG: created pool %s" % (s_pool['name'])
+                cls._create_or_update(s_pool)
+            else:
+                # Pool and driver storage pool exist, sync them
+                pool = cls._create_or_update(s_pool)
+                print "DEBUG: syncing pool %s" % (pool.name)
+                print cls.get_driver().xml_builder.build_pool_xml(pool)
 
 
 class ExternalModel(DriverModel):
@@ -362,11 +437,19 @@ class Node(ExternalModel):
         if self.has_snapshot(name):
             self.driver.node_revert_snapshot(node=self, name=name)
 
-
 class Volume(ExternalModel):
     capacity = models.BigIntegerField(null=False)
     backing_store = models.ForeignKey('self', null=True)
     format = models.CharField(max_length=255, null=False)
+
+
+    @property
+    def type(self):
+        return self.pool.volume_type
+
+    @property
+    def pool(self):
+        return self.environment.storage_pool
 
     def define(self):
         self.driver.volume_define(self)
@@ -387,8 +470,12 @@ class Volume(ExternalModel):
     def get_format(self):
         return self.driver.volume_format(self)
 
-    def get_path(self):
-        return self.driver.volume_path(self)
+    def get_path(self, uri=False):
+        path = self.driver.volume_path(self)
+        if uri:
+            if self.type == 'network':
+                return "{0}:{1}".format(self.pool.type, path)
+        return path
 
     def fill_from_exist(self):
         self.capacity = self.get_capacity()
@@ -400,11 +487,17 @@ class Volume(ExternalModel):
 
 class DiskDevice(models.Model):
     device = choices('disk', 'cdrom')
-    type = choices('file')
+    type = choices('file', 'network')
     bus = choices('virtio')
     target_dev = models.CharField(max_length=255, null=False)
     node = models.ForeignKey(Node, null=False)
     volume = models.ForeignKey(Volume, null=True)
+
+    @property
+    def pool(self):
+        if (self.volume is not None):
+            return self.volume.pool
+        return None
 
 
 class Interface(models.Model):
