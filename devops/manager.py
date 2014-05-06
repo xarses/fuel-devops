@@ -195,13 +195,18 @@ class Manager(object):
         return Address.objects.create(ip_address=ip_address,
                                       interface=interface)
 
-    def node_attach_volume(self, node, volume, device='disk',
-                           bus='virtio', target_dev=None):
+    def node_attach_volume(self, node, volume, device='disk', file=None
+                           type=None, bus='virtio', target_dev=None):
         """
         :rtype : DiskDevice
         """
+        if volume is not None:
+            d_type = volume.type
+        else:
+            d_type = type or 'file'
+
         return DiskDevice.objects.create(
-            device=device, type=volume.type, bus=bus,
+            device=device, type=d_type, bus=bus,
             target_dev=target_dev or node.next_disk_name(),
             volume=volume, node=node)
 

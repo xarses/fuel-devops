@@ -94,16 +94,12 @@ class LibvirtXMLBuilder(object):
         volume_xml = XMLBuilder('volume')
         volume_xml.name(volume.full_name)
         volume_xml.capacity(str(volume.capacity))
-        if volume.type == 'network':
-            with volume_xml.source:
-                self._pool_hosts(volume_xml, volume.pool)
-            self._pool_auth(volume_xml, volume.pool)
         with volume_xml.target:
             if volume.type == 'file':
                 volume_xml.format(type=volume.format)
         if volume.backing_store is not None:
             with volume_xml.backingStore:
-                volume_xml.path(self.driver.volume_path(volume.backing_store))
+                volume_xml.path(volume.backing_store.path)
                 volume_xml.format(type=volume.backing_store.format)
         return str(volume_xml)
 
@@ -122,17 +118,16 @@ class LibvirtXMLBuilder(object):
 
     def _build_disk_device(self, device_xml, disk_device):
         with device_xml.disk(type=disk_device.type, device=disk_device.device):
-            #https://bugs.launchpad.net/ubuntu/+source/qemu-kvm/+bug/741887
-
             if disk_device.type == 'network':
-                name = disk_device.volume.get_path()
                 with device_xml.source(protocol=disk_device.pool.type,
-                        name=name):
+                        name=disk_device.path):
                     self._pool_hosts(device_xml, disk_device.pool)
                 self._pool_auth(device_xml, disk_device.pool)
+                device_xml.driver(type='raw', cache='none')
             else:
-                device_xml.driver(type=disk_device.volume.format, cache="unsafe")
-                device_xml.source(file=self.driver.volume_path(disk_device.volume))
+                # https://bugs.launchpad.net/ubuntu/+source/qemu-kvm/+bug/741887
+                device_xml.driver(type=disk_device.format, cache='unsafe')
+                device_xml.source(file=disk_device.path))
 
             device_xml.target(dev=disk_device.target_dev, bus=disk_device.bus)
 

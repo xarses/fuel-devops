@@ -441,6 +441,7 @@ class Volume(ExternalModel):
     capacity = models.BigIntegerField(null=False)
     backing_store = models.ForeignKey('self', null=True)
     format = models.CharField(max_length=255, null=False)
+    path = models.CharField(max_length=255, null=True)
 
 
     @property
@@ -470,12 +471,13 @@ class Volume(ExternalModel):
     def get_format(self):
         return self.driver.volume_format(self)
 
-    def get_path(self, uri=False):
-        path = self.driver.volume_path(self)
-        if uri:
-            if self.type == 'network':
-                return "{0}:{1}".format(self.pool.type, path)
-        return path
+    def get_path(self):
+        if self.path:
+            return self.path
+        else:
+            self.path = self.driver.volume_path(self)
+            self.save()
+            return self.path
 
     def fill_from_exist(self):
         self.capacity = self.get_capacity()
@@ -490,12 +492,25 @@ class DiskDevice(models.Model):
     type = choices('file', 'network')
     bus = choices('virtio')
     target_dev = models.CharField(max_length=255, null=False)
+    file = models.CharField(max_length=255, null=True)
     node = models.ForeignKey(Node, null=False)
     volume = models.ForeignKey(Volume, null=True)
 
     @property
+    def format(self):
+        if self.volume is not None:
+            return self.volume.format
+        return 'raw'
+
+    @property
+    def path(self):
+        if self.volume is not None:
+            return self.volume.path
+        return self.file
+
+    @property
     def pool(self):
-        if (self.volume is not None):
+        if self.volume is not None:
             return self.volume.pool
         return None
 

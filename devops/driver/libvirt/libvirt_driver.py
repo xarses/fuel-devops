@@ -434,6 +434,7 @@ class DevopsDriver(object):
         libvirt_volume = self.conn.storagePoolLookupByName(pool).createXML(
             self.xml_builder.build_volume_xml(volume), 0)
         volume.uuid = libvirt_volume.key()
+        volume.path = libvirt_volume.path()
 
     @retry()
     def volume_path(self, volume):
